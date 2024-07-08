@@ -16,7 +16,7 @@ import sympy
 import torch
 import torch.fx
 from torch._inductor import dependencies
-from torch._prims_common import is_float_dtype
+from torch._prims_common import is_float_dtype, is_integer_dtype
 from torch.utils import _pytree as pytree
 from torch.utils._sympy.functions import CeilDiv, FloorDiv, ModularIndexing
 from torch.utils._sympy.symbol import free_symbol_is_type, symbol_is_type, SymT
@@ -1232,6 +1232,17 @@ class CppVecOverrides(CppOverrides):
         return f"{a} >> {b}"
 
     @staticmethod
+    def remainder(a, b):
+        assert (
+            a.dtype == b.dtype
+        ), "remainder vec implementation expect the same inputs' dtype."
+        if is_float_dtype(a.dtype):
+            return f"{a} - ({a} / {b}).floor() * {b}"
+        else:
+            assert is_integer_dtype(a.dtype)
+            return f"{a} - ({CppVecOverrides.floordiv(a, b)}) * {b}"
+
+    @staticmethod
     def tan(a):
         return f"{a}.tan()"
 
@@ -1334,17 +1345,36 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def floordiv(a, b):
+        def _floordiv(a, b):
+            _t = f"decltype({a})"
+            quot = f"{a} / {b}"
+            has_rem = f"({a} % {b} != {_t}(0))"
+            is_neg = f"(({a} < {_t}(0)) != ({b} < {_t}(0)))"
+            return f"{_t}::blendv({quot}, {quot} - {_t}(1), {has_rem} & {is_neg})"
+
         # a and b are integer type
-        _t = f"decltype({a})"
-        quot = f"{a} / {b}"
-        has_rem = f"({a} % {b} != {_t}(0))"
-        is_neg = f"(({a} < {_t}(0)) != ({b} < {_t}(0)))"
-        return f"{_t}::blendv({quot}, {quot} - {_t}(1), {has_rem} & {is_neg})"
+        if a.dtype in [torch.uint8, torch.int8]:
+            # Since we load 16 int8 elements into vec512, the remaining bits of vec512 could be zero
+            # and causes div with float exception. Convert to int for div to avoid this issue.
+            a_cast = f"at::vec::convert<int32_t>({a})"
+            b_cast = f"at::vec::convert<int32_t>({b})"
+            floor_div = f"({_floordiv(a_cast, b_cast)})"
+            return f"at::vec::convert<{DTYPE_TO_CPP[a.dtype]}>({floor_div})"
+        else:
+            return _floordiv(a, b)
 
     @staticmethod
     def truncdiv(a, b):
         # a and b are integer type
-        return f"{a} / {b}"
+        if a.dtype in [torch.uint8, torch.int8]:
+            # Since we load 16 int8 elements into vec512, the remaining bits of vec512 could be zero
+            # and causes div with float exception. Convert to int for div to avoid this issue.
+            a_cast = f"at::vec::convert<int32_t>({a})"
+            b_cast = f"at::vec::convert<int32_t>({b})"
+            trunc_div = f"{a_cast} / {b_cast}"
+            return f"at::vec::convert<{DTYPE_TO_CPP[a.dtype]}>({trunc_div})"
+        else:
+            return f"{a} / {b}"
 
     @staticmethod
     def minimum(a, b):
