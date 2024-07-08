@@ -394,19 +394,20 @@ class HalideOverrides(OpOverrides):
 
     @staticmethod
     def rand(seed, offset):
-        raise Unsupported("rand")
+        return f"halide_helpers.rand({seed}, {offset})"
 
     @staticmethod
     def randn(seed, offset):
-        raise Unsupported("rand")
+        return f"halide_helpers.randn({seed}, {offset})"
 
     @staticmethod
     def randint64(seed, offset, low, high):
-        raise Unsupported("rand")
+        return f"halide_helpers.randint64({seed}, {offset}, {low}, {high})"
 
     @staticmethod
     def load_seed(name, offset):
-        raise Unsupported("rand")
+        seed = ops.load(name, offset)
+        return seed
 
     @staticmethod
     def rsqrt(x):
@@ -1399,6 +1400,7 @@ class HalideKernel(SIMDKernel):
         code.splice(
             """
             import halide as hl
+            from torch._inductor.runtime import halide_helpers
             from math import inf, nan
 
             @hl.generator(name="kernel")
